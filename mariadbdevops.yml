@@ -1,0 +1,70 @@
+- hosts: master:slave
+  user: vagrant
+  tasks:
+  - name: Install MariaDB repository
+    apt_repository: repo='deb http://ftp.igh.cnrs.fr/pub/mariadb/repo/10.0/ubuntu trusty main' state=present
+  - name: Add repository key to the system
+    apt_key: keyserver=keyserver.ubuntu.com id=0xcbcb082a1bb943db
+  - name: Install MariaDB Server
+    apt: name=mariadb-server state=latest update_cache=yes
+  - name: Install python module
+    apt: name=python-mysqldb state=installed
+  - name: Create replication account
+    mysql_user: name=repl host="%" password=lper priv=*.*:"REPLICATION SLAVE" state=present
+  - name: Create readwrite user
+    mysql_user: name=rwuser host="%" password=adminpwd priv=*.*:SELECT,INSERT,UPDATE,DELETE,CREATE,DROP state=present
+  - name: Modify configuration file to listen on all interfaces
+    lineinfile: dest=/etc/mysql/my.cnf regexp="^bind-address" line="bind-address=0.0.0.0"
+- hosts: master
+  user: vagrant
+  tasks:
+  - name: Modify configuration file to setup server ID
+    lineinfile: dest=/etc/mysql/my.cnf regexp="^#server-id" line="server-id=1"
+  - name: Restart mysql service
+    service: name=mysql state=restarted
+  - name: Reset master binlog
+    command: /usr/bin/mysql -u root -e "RESET MASTER"
+- hosts: slave
+  user: vagrant
+  tasks:
+  - name: Modify configuration file to setup server ID
+    lineinfile: dest=/etc/mysql/my.cnf regexp="^#server-id" line="server-id=2"
+  - name: Setup replication
+    command: /usr/bin/mysql -uroot -e "CHANGE MASTER TO master_host='192.168.50.2', master_user='repl', master_password='lper', master_use_gtid=current_pos"
+  - name: Restart mysql service
+    service: name=mysql state=restarted
+Let’s go through the playbook to understand which tasks are planned:
+
+We install the MariaDB repository on both servers, and, using apt, install the latest version of MariaDB-server as well as mysql python module (needed for the account creation part)
+We create a ‘repl’@’%’ user with REPLICATION SLAVE privilege in order to setup replication later.
+We create an application user ‘rwuser’@’%’ in order to connect remotely from other servers.
+We modify the my.cnf file in order to setup correct server ids, as well as the requirement to listen on all interfaces (Ubuntu’s my.cnf is limited to localhost by defaults)
+We issue a CHANGE MASTER command using MariaDB 10.0 GTID to make the slave replicate from the master VM.
+We restart both mysqld services after installation in order to apply all those modifications.
+Let’s start both instances and the playbook. As Vagrant is able to invoke Ansible directly we don’t need to issue any actual Ansible command (else, Ansible would have been called with ansible-playbook maria.yml to provision both servers).
+
+$ vagrant up
+If you have correctly created both files (Vagrantfile and mariadb.yml), Vagrant will first start both virtual machines:
+
+Bringing machine 'master' up with 'virtualbox' provider...
+Bringing machine 'slave' up with 'virtualbox' provider...
+This might take some time as the Ubuntu VM image is downloaded from the internet.
+
+Then when each VMs is booted, Vagrant should invoke Ansible:
+
+==> master: Running provisioner: ansible...
+ 
+PLAY [master:slave] ***********************************************************
+ 
+GATHERING FACTS ***************************************************************
+ok: [master]
+Each task defined in the YAML playbook should now be played. Ansible should indicate success (or errors) for each configuration pass:
+
+PLAY RECAP ********************************************************************
+master                     : ok=12   changed=10   unreachable=0    failed=0 
+We should now be able to connect with the application user and play with our master/slave setup:
+
+$ mysql -h127.0.0.1 -P3336 -urwuser -padminpwd
+Have fun experimenting with Ansible, and don’t hesitate to refer yourself to the Ansible documentation for more information.
+
+In the next series we will push the experiment further using the Ansible template engine and leveraging it to configure a Galera cluster automatically. Stay tuned!
